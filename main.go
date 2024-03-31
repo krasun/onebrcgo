@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 )
@@ -35,9 +36,8 @@ func parse(row string) (string, float64, error) {
 	return "", 0, fmt.Errorf("failed to locate \";\" in \"%s\"", row)
 }
 
-func compute(lines chan string) (map[string]*StationMetrics, []string) {
+func compute(lines chan string) map[string]*StationMetrics {
 	measurements := make(map[string]*StationMetrics)
-	stations := make([]string, 0)
 
 	for line := range lines {
 		station, temperature, err := parse(line)
@@ -58,11 +58,10 @@ func compute(lines chan string) (map[string]*StationMetrics, []string) {
 				sum:   temperature,
 				count: 1,
 			}
-			stations = append(stations, station)
 		}
 	}
 
-	return measurements, stations
+	return measurements
 }
 
 func findNextNewLinePosition(file *os.File, startPosition int64) (int64, error) {
@@ -188,7 +187,6 @@ func main() {
 	}
 
 	allMeasurements := make(map[string]*StationMetrics, 0)
-	allStations := make([]string, 0)
 	lock := sync.Mutex{}
 
 	for i := 0; i < chunks; i++ {
@@ -196,12 +194,11 @@ func main() {
 		go func(i int) {
 			defer wg.Done()
 
-			measurements, stations := compute(channels[i])
+			measurements := compute(channels[i])
 
 			lock.Lock()
 			defer lock.Unlock()
 
-			allStations = append(allStations, stations...)
 			for station, metrics := range measurements {
 				totalMetrics, exists := allMeasurements[station]
 				if exists {
@@ -217,6 +214,12 @@ func main() {
 	}
 
 	wg.Wait()
+
+	allStations := make([]string, 0)
+	for station := range allMeasurements {
+		allStations = append(allStations, station)
+	}
+	sort.Strings(allStations)
 
 	fmt.Print("{")
 	for i, station := range allStations {
