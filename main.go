@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type StationAverage struct {
@@ -25,41 +26,60 @@ func main() {
 	}
 	defer file.Close()
 
+	var wg sync.WaitGroup
+	lines := make(chan string, 100000)
+
+	scanner := bufio.NewScanner(file)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+
+		if err := scanner.Err(); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
 	measurements := make(map[string]*StationAverage)
 	stations := make([]string, 0)
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		row := scanner.Text()
-		parts := strings.Split(row, ";")
-		station := parts[0]
-		temperature, err := strconv.ParseFloat(parts[1], 64)
-		if err != nil {
-			log.Fatal(err)
-		}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 
-		_, exists := measurements[station]
-		if exists {
-			measurements[station].max = math.Max(measurements[station].max, temperature)
-			measurements[station].min = math.Min(measurements[station].min, temperature)
-			measurements[station].sum += temperature
-			measurements[station].count += 1
-		} else {
-			measurements[station] = &StationAverage{
-				max:   temperature,
-				min:   temperature,
-				sum:   temperature,
-				count: 1,
+		for line := range lines {
+			parts := strings.Split(line, ";")
+			station := parts[0]
+			temperature, err := strconv.ParseFloat(parts[1], 64)
+			if err != nil {
+				log.Fatal(err)
 			}
-			stations = append(stations, station)
+
+			_, exists := measurements[station]
+			if exists {
+				measurements[station].max = math.Max(measurements[station].max, temperature)
+				measurements[station].min = math.Min(measurements[station].min, temperature)
+				measurements[station].sum += temperature
+				measurements[station].count += 1
+			} else {
+				measurements[station] = &StationAverage{
+					max:   temperature,
+					min:   temperature,
+					sum:   temperature,
+					count: 1,
+				}
+				stations = append(stations, station)
+			}
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		log.Fatal(err)
-	}
+		sort.Strings(stations)
+	}()
 
-	sort.Strings(stations)
+	wg.Wait()
 
 	fmt.Print("{")
 	for i, station := range stations {
