@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"os"
-	"sort"
 	"strconv"
 	"sync"
 )
@@ -62,8 +61,6 @@ func compute(lines chan string) (map[string]*StationMetrics, []string) {
 			stations = append(stations, station)
 		}
 	}
-
-	sort.Strings(stations)
 
 	return measurements, stations
 }
@@ -161,49 +158,71 @@ func createScanners(filePath string, chunkNumber int) ([]*bufio.Scanner, func() 
 func main() {
 	// filePath := os.Args[1:][0]
 	filePath := "./measurements.txt"
+	chunks := 10
+	bufferSize := 1000000
 
-	chunkNumber := 2
-	scanners, closeFiles, err := createScanners(filePath, chunkNumber)
+	scanners, closeFiles, err := createScanners(filePath, chunks)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer closeFiles()
 
-	var readWaitGroup sync.WaitGroup
-	lines := make(chan string, 1000000)
+	channels := make([]chan string, chunks)
+	for i := 0; i < chunks; i++ {
+		channels[i] = make(chan string, bufferSize)
+	}
 
-	for _, scanner := range scanners {
-		readWaitGroup.Add(1)
-		go func(scanner *bufio.Scanner) {
-			defer readWaitGroup.Done()
+	var wg sync.WaitGroup
+	for i, scanner := range scanners {
+		wg.Add(1)
+		go func(scanner *bufio.Scanner, i int) {
+			defer wg.Done()
 
-			readFile(scanner, lines)
+			readFile(scanner, channels[i])
+			close(channels[i])
 
 			if err := scanner.Err(); err != nil {
 				log.Fatal(err)
 			}
-		}(scanner)
+		}(scanner, i)
 	}
 
-	var measurements map[string]*StationMetrics
-	var stations []string
-	var computeWaitGroup sync.WaitGroup
-	computeWaitGroup.Add(1)
-	go func() {
-		defer computeWaitGroup.Done()
-		measurements, stations = compute(lines)
-	}()
+	allMeasurements := make(map[string]*StationMetrics, 0)
+	allStations := make([]string, 0)
+	lock := sync.Mutex{}
 
-	readWaitGroup.Wait()
-	close(lines)
+	for i := 0; i < chunks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
 
-	computeWaitGroup.Wait()
+			measurements, stations := compute(channels[i])
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			allStations = append(allStations, stations...)
+			for station, metrics := range measurements {
+				totalMetrics, exists := allMeasurements[station]
+				if exists {
+					totalMetrics.max = math.Max(metrics.max, totalMetrics.max)
+					totalMetrics.min = math.Min(metrics.min, totalMetrics.min)
+					totalMetrics.sum += metrics.sum
+					totalMetrics.count += metrics.count
+				} else {
+					allMeasurements[station] = metrics
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
 
 	fmt.Print("{")
-	for i, station := range stations {
-		average := measurements[station]
+	for i, station := range allStations {
+		average := allMeasurements[station]
 		fmt.Printf("%s=%.1f/%.1f/%.1f", station, average.min, average.sum/float64(average.count), average.max)
-		if i != (len(stations) - 1) {
+		if i != (len(allStations) - 1) {
 			fmt.Print(", ")
 		}
 	}
